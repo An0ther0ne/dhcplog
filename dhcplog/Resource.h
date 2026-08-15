@@ -3,6 +3,8 @@
 // Used by dhcplog.rc
 
 #define IDS_APP_TITLE			103
+#define IDD_INTERFACE_DIALOG    104
+#define IDC_INTERFACE_COMBO     1001
 
 #define IDR_MAINFRAME			128
 #define IDD_DHCPLOG_DIALOG	102
