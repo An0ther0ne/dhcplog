@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="dhcplog/dhcplog.vcxproj" Id="d2bf5bd1-7172-4363-925d-86cfe538464a" />
+</Solution>
