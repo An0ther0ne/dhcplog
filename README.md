@@ -1,63 +1,62 @@
-dhcplog — простий логер DHCP/BOOTP повідомлень
-=============================================
+dhcplog — simple DHCP/BOOTP logger
+=================================
 
-Коротко
--------
-dhcplog — невеликий Windows-додаток на C++, який може захоплювати та логувати DHCP/BOOTP-повідомлення з мережевого інтерфейсу. У репозиторії також є допоміжний скрипт send_dhcp.py для відправлення тестових DHCP-пакетів (Scapy).
+Overview
+--------
+dhcplog is a small Windows C++ application that can capture and log DHCP/BOOTP messages from a network interface. The repository also includes a helper script send_dhcp.py to send test DHCP packets (Scapy).
 
-Файли важливі
----------------
-- dhcplog.sln / dhcplog.vcxproj — Visual Studio проект
-- dhcplog/sniffer.cpp, sniffer.h — логіка захоплення пакетів
-- dhcplog/logger.* — логер
-- send_dhcp.py — скрипт для відправки тестових DHCP-пакетів (Scapy)
+Key files
+---------
+- dhcplog.sln / dhcplog.vcxproj — Visual Studio solution and project
+- dhcplog/sniffer.cpp, dhcplog/sniffer.h — packet capture logic
+- dhcplog/logger.* — logging implementation
+- send_dhcp.py — Python script to send test DHCP packets (Scapy)
 
-Вимоги
--------
+Requirements
+------------
 - Windows 10/11
-- Microsoft Visual Studio (MSVC) для збірки
-- Для захоплення пакетів у реальному часі: Npcap (встановіть з опцією "WinPcap API‑compatible mode")
-- Для тестової відправки пакетів: Python 3 та пакет scapy (pip install scapy)
+- Microsoft Visual Studio (MSVC) to build the project
+- For live packet capture: Npcap (install with "WinPcap API‑compatible mode")
+- For sending test packets: Python 3 and scapy (pip install scapy)
 
-Збірка проекту (Visual Studio)
--------------------------------
-1. Відкрийте dhcplog.sln у Visual Studio.
-2. (Опціонально) Щоб включити pcap-підтримку і використовувати WinPcap/Npcap API:
-   - Встановіть Npcap та (за бажанням) Npcap SDK.
-   - Відкрийте властивості проекту -> C/C++ -> Preprocessor -> додайте HAVE_PCAP
-   - C/C++ -> Additional Include Directories: додайте шлях до Npcap\\Include (наприклад C:\\Program Files\\Npcap\\Include)
-   - Linker -> Additional Library Directories: додайте шлях до Npcap\\Lib\\<x86|x64>
-   - Linker -> Input -> Additional Dependencies: додайте wpcap.lib;Packet.lib;Ws2_32.lib
-   - Перебудуйте проект.
-3. Запустіть збірку (Build -> Build Solution).
+Build (Visual Studio)
+----------------------
+1. Open dhcplog.sln in Visual Studio.
+2. (Optional) To enable pcap support using WinPcap/Npcap:
+   - Install Npcap and optionally the Npcap SDK.
+   - Project Properties -> C/C++ -> Preprocessor -> add HAVE_PCAP
+   - Project Properties -> C/C++ -> Additional Include Directories: add Npcap\\Include (e.g. C:\\Program Files\\Npcap\\Include)
+   - Project Properties -> Linker -> Additional Library Directories: add Npcap\\Lib\\<x86|x64>
+   - Project Properties -> Linker -> Input -> Additional Dependencies: add wpcap.lib;Packet.lib;Ws2_32.lib
+   - Rebuild the project.
+3. Build the solution (Build -> Build Solution).
 
-Запуск і тестування
---------------------
-1. Запустіть збудований dhcplog.exe від імені Адміністратора (потрібні права для захоплення мережі).
-2. Якщо ви хочете надіслати тестові DHCP-пакети (щоб перевірити логування):
-   - Встановіть Python 3 та Npcap (WinPcap‑compatible).
-   - Відкрийте термінал від Адміністраторa у папці проекту:
+Run and test
+------------
+1. Run the built dhcplog.exe as Administrator (admin rights are required for packet capture).
+2. To send test DHCP packets (to verify logging):
+   - Install Python 3 and Npcap (WinPcap-compatible).
+   - Open an elevated terminal in the project folder and install scapy:
 	 pip install scapy
-   - Дізнайтеся ім'я інтерфейсу (використовуйте netsh або Scapy):
+   - Find the interface name (use netsh or Scapy):
 	 netsh interface show interface
-	 (скопіюйте значення з колонки "Interface Name", наприклад "Wi‑Fi" або "Беспроводная сеть")
-   - Запустіть приклад (приклад для інтерфейсу "Беспроводная сеть"):
+	 (copy the exact value from the "Interface Name" column, e.g. "Wi‑Fi" or "Беспроводная сеть")
+   - Run the example (using the interface name you found):
 	 python .\\send_dhcp.py --iface "Беспроводная сеть" --count 3 --type discover --mac 44:6D:57:2E:F3:6A
 
-Примітки про безпеку та дозвіл
------------------------------
-- Відправка DHCP-пакетів у мережі може впливати на локальні DHCP-сервери. Використовуйте на тестових або ізольованих мережах.
-- Для захоплення сирих пакетів і роботи WSA SIO_RCVALL або pcap потрібні права Адміністратора.
+Security and permissions
+------------------------
+- Sending DHCP packets on a network can affect local DHCP servers. Use this only on test or isolated networks.
+- Capturing raw packets (SIO_RCVALL) or using pcap requires Administrator privileges.
 
-Усунення проблем
------------------
-- Якщо програма не логуватиме пакети, перевірте чи зібрано проект з HAVE_PCAP (якщо ви хочете використовувати pcap), або чи дозволяє система використання SIO_RCVALL (raw sockets можуть бути обмежені у сучасних Windows).
-- Якщо send_dhcp.py не надсилає пакети — переконайтесь, що Npcap встановлено і термінал запущено як Admin.
+Troubleshooting
+---------------
+- If the application does not log packets, check whether the project was built with HAVE_PCAP (if you expect to use pcap) or whether SIO_RCVALL (raw sockets) is permitted on your Windows version.
+- If send_dhcp.py does not send packets, ensure Npcap is installed and you run the terminal as Administrator.
 
-Контакти
---------
-Це локальний проект у вашому репозиторії. Для подальших змін або питань запускайте issues у вашому віддаленому репозиторії.
-
+Contact
+-------
+This is a local project in your repository. For further changes or issues, open issues in your remote repository.
 
 ---
-Файл згенеровано автоматично (коротка інструкція). Якщо потрібно докладніше README або додати приклади запуску, скажіть які саме розділи додати.
+This README was generated automatically. If you need a more detailed README or additional examples, tell me which sections to add.
