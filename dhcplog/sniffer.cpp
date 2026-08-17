@@ -229,7 +229,8 @@ void DhcpSniffer::run()
     // is sufficient and works on adapters (Wi-Fi, virtual) that
     // don't support real promiscuous mode. If it doesn't capture
     // anything on a given adapter, switch this to RCVALL_ON.
-    DWORD rcvAll = RCVALL_IPLEVEL;
+    // DWORD rcvAll = RCVALL_IPLEVEL;
+    DWORD rcvAll = RCVALL_ON;
     DWORD bytesReturned = 0;
 
     if (WSAIoctl(
@@ -277,6 +278,8 @@ void DhcpSniffer::run()
             reinterpret_cast<char*>(buffer.data()),
             static_cast<int>(buffer.size()),
             0);
+//        if (buffer[9] == IPPROTO_UDP )
+//            __debugbreak();
 
         if (received == SOCKET_ERROR) {
 
@@ -291,6 +294,34 @@ void DhcpSniffer::run()
                 std::to_string(err));
 
             break;
+        }
+
+        if (received >= 20) {
+            const unsigned char* ip = buffer.data();
+
+            int ipHeaderLen = (ip[0] & 0x0F) * 4;
+
+            if (ipHeaderLen >= 20 &&
+                received >= ipHeaderLen + 8 &&
+                ip[9] == IPPROTO_UDP) {
+
+                const unsigned char* udp = ip + ipHeaderLen;
+
+                uint16_t srcPort =
+                    static_cast<uint16_t>((udp[0] << 8) | udp[1]);
+
+                uint16_t dstPort =
+                    static_cast<uint16_t>((udp[2] << 8) | udp[3]);
+
+                if ((srcPort == 67 || srcPort == 68) &&
+                    (dstPort == 67 || dstPort == 68)) {
+
+                    logger_->Log(
+                        nowTimestamp() +
+                        " RAW_DHCP_BOOTP_RECV len=" +
+                        std::to_string(received));
+                }
+            }
         }
 
         if (received < 20)
