@@ -97,27 +97,33 @@ static std::string DhcpMessageType(const unsigned char* payload, int len)
     return std::string("DHCP/") + opName;
 }
 
-// Appends one 16-byte hex dump line: 8 bytes, 2-space gap, 8 bytes,
-// 4-space gap, ASCII column. lineLen is 1..16 (bytes actually
-// present); missing slots on the last line are left blank so the
-// ASCII column still lines up.
+static constexpr int kHexBytesPerLine = 32;
+static constexpr int kHexGroupSize = 16;
+
+// Appends one 32-byte hex dump line: 16 bytes, 2-space gap, 16
+// bytes, 4-space gap, ASCII column, with a 1-space left indent so
+// dump lines are visually offset from the header line above them.
+// lineLen is 1..32 (bytes actually present); missing slots on the
+// last line are left blank so the ASCII column still lines up.
 static void AppendHexDumpLine(
     std::ostringstream& out,
     const unsigned char* data,
     int lineLen)
 {
+    out << " ";
+
     out << std::hex << std::uppercase << std::setfill('0');
 
-    for (int col = 0; col < 16; ++col) {
+    for (int col = 0; col < kHexBytesPerLine; ++col) {
 
         if (col < lineLen)
             out << std::setw(2) << static_cast<int>(data[col]);
         else
             out << "  ";
 
-        if (col == 7)
+        if (col == kHexGroupSize - 1)
             out << "  ";
-        else if (col != 15)
+        else if (col != kHexBytesPerLine - 1)
             out << " ";
     }
 
@@ -328,9 +334,9 @@ void DhcpSniffer::run()
 
         int toDump = (std::min)(128, payloadLen);
 
-        for (int offset = 0; offset < toDump; offset += 16) {
+        for (int offset = 0; offset < toDump; offset += kHexBytesPerLine) {
 
-            int lineLen = (std::min)(16, toDump - offset);
+            int lineLen = (std::min)(kHexBytesPerLine, toDump - offset);
 
             entry << "\r\n";
 
@@ -355,4 +361,3 @@ void DhcpSniffer::run()
 
     closesocket(sock);
 }
-
