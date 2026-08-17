@@ -11,9 +11,11 @@
 #include <algorithm>
 
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <iphlpapi.h>
 
 #pragma comment(lib, "Iphlpapi.lib")
+#pragma comment(lib, "Ws2_32.lib")
 
 #include "logger.h"
 #include "sniffer.h"
@@ -26,6 +28,7 @@ WCHAR szTitle[MAX_LOADSTRING];
 WCHAR szWindowClass[MAX_LOADSTRING];
 
 HWND g_hEdit = nullptr;
+HFONT g_hLogFont = nullptr;
 HWND g_hInterfaceCombo = nullptr;
 
 std::unique_ptr<LogManager> g_logger;
@@ -40,6 +43,7 @@ struct NetworkAdapter
 {
     std::wstring friendlyName;
     std::wstring adapterName;
+    std::string  ipv4;
 };
 
 // Forward declarations
@@ -60,12 +64,6 @@ INT_PTR CALLBACK About(
     LPARAM);
 
 static std::vector<NetworkAdapter> GetNetworkAdapters();
-
-static std::string WideToUtf8(
-    const std::wstring& value);
-
-static std::string AdapterNameToPcapDevice(
-    const std::wstring& adapterName);
 
 static bool StartCapture(HWND hWnd);
 
@@ -130,6 +128,31 @@ static std::vector<NetworkAdapter> GetNetworkAdapters()
         if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
             continue;
 
+        // Raw-socket capture binds to the interface's IPv4
+        // address, so adapters without one are unusable here.
+        std::string ip;
+
+        for (IP_ADAPTER_UNICAST_ADDRESS* ua = adapter->FirstUnicastAddress;
+            ua != nullptr;
+            ua = ua->Next) {
+
+            if (ua->Address.lpSockaddr->sa_family == AF_INET) {
+
+                char buf[INET_ADDRSTRLEN]{};
+
+                auto* sin =
+                    reinterpret_cast<sockaddr_in*>(ua->Address.lpSockaddr);
+
+                inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf));
+
+                ip = buf;
+                break;
+            }
+        }
+
+        if (ip.empty())
+            continue;
+
         NetworkAdapter item;
 
         item.friendlyName = adapter->FriendlyName;
@@ -142,62 +165,12 @@ static std::vector<NetworkAdapter> GetNetworkAdapters()
                 adapter->AdapterName +
                 strlen(adapter->AdapterName));
 
+        item.ipv4 = ip;
+
         result.push_back(std::move(item));
     }
 
     return result;
-}
-
-
-// ------------------------------------------------------------
-// UTF-16 -> UTF-8
-// ------------------------------------------------------------
-
-static std::string WideToUtf8(
-    const std::wstring& value)
-{
-    if (value.empty())
-        return {};
-
-    int size = WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        value.c_str(),
-        static_cast<int>(value.size()),
-        nullptr,
-        0,
-        nullptr,
-        nullptr);
-
-    if (size <= 0)
-        return {};
-
-    std::string result(size, '\0');
-
-    WideCharToMultiByte(
-        CP_UTF8,
-        0,
-        value.c_str(),
-        static_cast<int>(value.size()),
-        result.data(),
-        size,
-        nullptr,
-        nullptr);
-
-    return result;
-}
-
-
-// ------------------------------------------------------------
-// Windows AdapterName -> Npcap device name
-// ------------------------------------------------------------
-
-static std::string AdapterNameToPcapDevice(
-    const std::wstring& adapterName)
-{
-    std::string guid = WideToUtf8(adapterName);
-
-    return "\\Device\\NPF_{" + guid + "}";
 }
 
 
@@ -234,9 +207,6 @@ static bool StartCapture(HWND hWnd)
     if (!adapter)
         return false;
 
-    std::string pcapDevice =
-        AdapterNameToPcapDevice(adapter->adapterName);
-
     g_logger = std::make_unique<LogManager>(
         L"logs",
         LogManager::Rotation::Daily,
@@ -248,7 +218,7 @@ static bool StartCapture(HWND hWnd)
         std::make_unique<DhcpSniffer>(
             hWnd,
             g_logger.get(),
-            pcapDevice);
+            adapter->ipv4);
 
     g_sniffer->Start();
 
@@ -273,6 +243,11 @@ int APIENTRY wWinMain(
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
+
+    WSADATA wsaData{};
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+        return FALSE;
 
     LoadStringW(
         hInstance,
@@ -309,6 +284,8 @@ int APIENTRY wWinMain(
             DispatchMessage(&msg);
         }
     }
+
+    WSACleanup();
 
     return static_cast<int>(msg.wParam);
 }
@@ -469,6 +446,26 @@ BOOL InitInstance(
             reinterpret_cast<HMENU>(1000),
             hInstance,
             nullptr);
+
+    g_hLogFont =
+        CreateFontW(
+            -14,
+            0, 0, 0,
+            FW_NORMAL,
+            FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            DEFAULT_QUALITY,
+            FIXED_PITCH | FF_MODERN,
+            L"Consolas");
+
+    if (g_hLogFont)
+        SendMessage(
+            g_hEdit,
+            WM_SETFONT,
+            reinterpret_cast<WPARAM>(g_hLogFont),
+            TRUE);
 
 
     // Enumerate Windows adapters
@@ -758,6 +755,11 @@ LRESULT CALLBACK WndProc(
 
                 delete adapter;
             }
+        }
+
+        if (g_hLogFont) {
+            DeleteObject(g_hLogFont);
+            g_hLogFont = nullptr;
         }
 
         PostQuitMessage(0);

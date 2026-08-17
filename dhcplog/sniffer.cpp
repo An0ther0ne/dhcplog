@@ -1,16 +1,16 @@
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <mstcpip.h>
 #include "sniffer.h"
-#include <Windows.h>
+
 #include <sstream>
 #include <iomanip>
 #include <vector>
-#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <algorithm>
 
-#ifdef HAVE_PCAP
-#include <pcap.h>
-#endif
+#pragma comment(lib, "Ws2_32.lib")
 
 static std::string nowTimestamp()
 {
@@ -19,29 +19,114 @@ static std::string nowTimestamp()
     auto t = system_clock::to_time_t(system_clock::now());
 
     std::tm tm;
-#ifdef _WIN32
     localtime_s(&tm, &t);
-#else
-    tm = *std::localtime(&t);
-#endif
 
     std::ostringstream ss;
     ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return ss.str();
 }
 
-static std::string macToString(const unsigned char* mac)
+static std::string ipToString(uint32_t netOrderIp)
 {
-    std::ostringstream ss;
-    ss << std::hex << std::setfill('0');
+    in_addr addr{};
+    addr.s_addr = netOrderIp;
 
-    for (int i = 0; i < 6; ++i) {
-        if (i) ss << ":";
-        ss << std::setw(2) << static_cast<int>(mac[i]);
+    char buf[INET_ADDRSTRLEN]{};
+    inet_ntop(AF_INET, &addr, buf, sizeof(buf));
+    return buf;
+}
+
+// DHCP/BOOTP fixed header is 236 bytes, followed by a 4-byte magic
+// cookie (63 82 53 63) and options for DHCP. Plain BOOTP has neither.
+static std::string DhcpMessageType(const unsigned char* payload, int len)
+{
+    if (len < 1)
+        return "?";
+
+    const char* opName =
+        (payload[0] == 1) ? "BOOTREQUEST" :
+        (payload[0] == 2) ? "BOOTREPLY" : "BOOTP?";
+
+    if (len < 240)
+        return opName;
+
+    static const unsigned char cookie[4] = { 0x63, 0x82, 0x53, 0x63 };
+
+    if (memcmp(payload + 236, cookie, 4) != 0)
+        return opName;
+
+    // Walk options for tag 53 (DHCP Message Type).
+    int i = 240;
+
+    while (i < len) {
+
+        unsigned char tag = payload[i];
+
+        if (tag == 0xFF)
+            break;
+
+        if (tag == 0x00) {
+            ++i;
+            continue;
+        }
+
+        if (i + 1 >= len)
+            break;
+
+        unsigned char optLen = payload[i + 1];
+
+        if (tag == 53 && optLen >= 1 && i + 2 < len) {
+
+            switch (payload[i + 2]) {
+            case 1: return "DHCPDISCOVER";
+            case 2: return "DHCPOFFER";
+            case 3: return "DHCPREQUEST";
+            case 4: return "DHCPDECLINE";
+            case 5: return "DHCPACK";
+            case 6: return "DHCPNAK";
+            case 7: return "DHCPRELEASE";
+            case 8: return "DHCPINFORM";
+            default: return "DHCP(type=" + std::to_string(payload[i + 2]) + ")";
+            }
+        }
+
+        i += 2 + optLen;
     }
 
-    ss << std::dec;
-    return ss.str();
+    // Magic cookie present, but no option 53 -- still DHCP framing.
+    return std::string("DHCP/") + opName;
+}
+
+// Appends one 16-byte hex dump line: 8 bytes, 2-space gap, 8 bytes,
+// 4-space gap, ASCII column. lineLen is 1..16 (bytes actually
+// present); missing slots on the last line are left blank so the
+// ASCII column still lines up.
+static void AppendHexDumpLine(
+    std::ostringstream& out,
+    const unsigned char* data,
+    int lineLen)
+{
+    out << std::hex << std::uppercase << std::setfill('0');
+
+    for (int col = 0; col < 16; ++col) {
+
+        if (col < lineLen)
+            out << std::setw(2) << static_cast<int>(data[col]);
+        else
+            out << "  ";
+
+        if (col == 7)
+            out << "  ";
+        else if (col != 15)
+            out << " ";
+    }
+
+    out << std::dec << std::nouppercase << "    ";
+
+    for (int col = 0; col < lineLen; ++col) {
+        unsigned char b = data[col];
+        out << (b >= 0x20 && b < 0x7F ? static_cast<char>(b) : '.');
+    }
 }
 
 DhcpSniffer::DhcpSniffer(
@@ -78,128 +163,196 @@ void DhcpSniffer::Stop()
         thread_.join();
 }
 
+// interfaceName_ holds the dotted IPv4 address of the selected
+// adapter (see NetworkAdapter::ipv4 in dhcplog.cpp) -- raw sockets
+// bind to an IP, not to a device name.
 void DhcpSniffer::run()
 {
-#ifdef HAVE_PCAP
+    SOCKET sock = socket(AF_INET, SOCK_RAW, IPPROTO_IP);
 
-    char errbuf[PCAP_ERRBUF_SIZE]{};
-
-    pcap_t* handle = pcap_open_live(
-        interfaceName_.c_str(),
-        65536,
-        1,
-        1000,
-        errbuf);
-
-    if (!handle) {
+    if (sock == INVALID_SOCKET) {
         logger_->Log(
             nowTimestamp() +
-            " ERROR: pcap_open_live failed: " +
-            std::string(errbuf));
+            " ERROR: socket() failed: " +
+            std::to_string(WSAGetLastError()));
 
         return;
     }
 
-    // DHCP / BOOTP: UDP ports 67 and 68.
-    struct bpf_program fp;
+    sockaddr_in bindAddr{};
+    bindAddr.sin_family = AF_INET;
 
-    if (pcap_compile(
-        handle,
-        &fp,
-        "udp and (port 67 or port 68)",
-        1,
-        PCAP_NETMASK_UNKNOWN) == 0) {
+    if (inet_pton(AF_INET, interfaceName_.c_str(), &bindAddr.sin_addr) != 1) {
 
-        if (pcap_setfilter(handle, &fp) != 0) {
-            logger_->Log(
-                nowTimestamp() +
-                " ERROR: pcap_setfilter failed: " +
-                std::string(pcap_geterr(handle)));
-
-            pcap_freecode(&fp);
-            pcap_close(handle);
-            return;
-        }
-
-        pcap_freecode(&fp);
-    }
-    else {
         logger_->Log(
             nowTimestamp() +
-            " ERROR: pcap_compile failed: " +
-            std::string(pcap_geterr(handle)));
+            " ERROR: invalid interface IPv4 address: " +
+            interfaceName_);
 
-        pcap_close(handle);
+        closesocket(sock);
+        return;
+    }
+
+    if (bind(
+        sock,
+        reinterpret_cast<sockaddr*>(&bindAddr),
+        sizeof(bindAddr)) == SOCKET_ERROR) {
+
+        logger_->Log(
+            nowTimestamp() +
+            " ERROR: bind() failed: " +
+            std::to_string(WSAGetLastError()));
+
+        closesocket(sock);
+        return;
+    }
+
+    DWORD hdrIncl = TRUE;
+
+    setsockopt(
+        sock,
+        IPPROTO_IP,
+        IP_HDRINCL,
+        reinterpret_cast<char*>(&hdrIncl),
+        sizeof(hdrIncl));
+
+    // RCVALL_IPLEVEL: deliver every IP packet the NIC already
+    // receives (unicast to us, broadcast, multicast) without
+    // switching the adapter into true NIC promiscuous mode.
+    // DHCP/BOOTP traffic is broadcast or addressed to us, so this
+    // is sufficient and works on adapters (Wi-Fi, virtual) that
+    // don't support real promiscuous mode. If it doesn't capture
+    // anything on a given adapter, switch this to RCVALL_ON.
+    DWORD rcvAll = RCVALL_IPLEVEL;
+    DWORD bytesReturned = 0;
+
+    if (WSAIoctl(
+        sock,
+        SIO_RCVALL,
+        &rcvAll,
+        sizeof(rcvAll),
+        nullptr,
+        0,
+        &bytesReturned,
+        nullptr,
+        nullptr) == SOCKET_ERROR) {
+
+        logger_->Log(
+            nowTimestamp() +
+            " ERROR: SIO_RCVALL failed (потрібні права адміністратора): " +
+            std::to_string(WSAGetLastError()));
+
+        closesocket(sock);
         return;
     }
 
     logger_->Log(
         nowTimestamp() +
-        " INFO: pcap capture started on device: " +
+        " INFO: raw capture started on " +
         interfaceName_);
+
+    // Recv timeout so the loop notices Stop() promptly instead of
+    // blocking indefinitely on recv().
+    DWORD timeout = 500;
+
+    setsockopt(
+        sock,
+        SOL_SOCKET,
+        SO_RCVTIMEO,
+        reinterpret_cast<char*>(&timeout),
+        sizeof(timeout));
+
+    std::vector<unsigned char> buffer(65536);
 
     while (running_) {
 
-        struct pcap_pkthdr* header = nullptr;
-        const u_char* pkt = nullptr;
+        int received = recv(
+            sock,
+            reinterpret_cast<char*>(buffer.data()),
+            static_cast<int>(buffer.size()),
+            0);
 
-        int res = pcap_next_ex(
-            handle,
-            &header,
-            &pkt);
+        if (received == SOCKET_ERROR) {
 
-        if (res == 0)
-            continue;
+            int err = WSAGetLastError();
 
-        if (res < 0) {
+            if (err == WSAETIMEDOUT)
+                continue;
+
             logger_->Log(
                 nowTimestamp() +
-                " ERROR: pcap_next_ex failed: " +
-                std::string(pcap_geterr(handle)));
+                " ERROR: recv() failed: " +
+                std::to_string(err));
 
             break;
         }
 
+        if (received < 20)
+            continue;
+
+        const unsigned char* ip = buffer.data();
+
+        int ipHeaderLen = (ip[0] & 0x0F) * 4;
+
+        if (ip[9] != IPPROTO_UDP)
+            continue;
+
+        if (received < ipHeaderLen + 8)
+            continue;
+
+        const unsigned char* udp = ip + ipHeaderLen;
+
+        uint16_t srcPort = (udp[0] << 8) | udp[1];
+        uint16_t dstPort = (udp[2] << 8) | udp[3];
+
+        if (srcPort != 67 && srcPort != 68 &&
+            dstPort != 67 && dstPort != 68)
+            continue;
+
+        uint32_t srcIpRaw;
+        uint32_t dstIpRaw;
+
+        memcpy(&srcIpRaw, ip + 12, 4);
+        memcpy(&dstIpRaw, ip + 16, 4);
+
+        const unsigned char* payload = udp + 8;
+        int payloadLen = received - ipHeaderLen - 8;
+
         std::ostringstream entry;
 
         entry << nowTimestamp()
-            << " CAPTURE len=" << header->len
-            << " caplen=" << header->caplen;
+            << " CAPTURE len=" << received
+            << " SRC=" << ipToString(srcIpRaw) << ":" << srcPort
+            << " DST=" << ipToString(dstIpRaw) << ":" << dstPort
+            << " TYPE=" << DhcpMessageType(payload, payloadLen);
 
-        if (header->caplen >= 14) {
-            const unsigned char* eth = pkt;
+        int toDump = (std::min)(128, payloadLen);
 
-            entry << " SRC_MAC="
-                << macToString(eth + 6)
-                << " DST_MAC="
-                << macToString(eth + 0);
+        for (int offset = 0; offset < toDump; offset += 16) {
+
+            int lineLen = (std::min)(16, toDump - offset);
+
+            entry << "\r\n";
+
+            AppendHexDumpLine(entry, payload + offset, lineLen);
         }
-
-        int toDump = static_cast<int>(
-            std::min<size_t>(128, header->caplen));
-
-        entry << " DATA=";
-
-        for (int i = 0; i < toDump; ++i) {
-            entry << std::hex
-                << std::setw(2)
-                << std::setfill('0')
-                << static_cast<int>(pkt[i]);
-        }
-
-        entry << std::dec;
 
         logger_->Log(entry.str());
     }
 
-    pcap_close(handle);
+    DWORD rcvOff = RCVALL_OFF;
 
-#else
+    WSAIoctl(
+        sock,
+        SIO_RCVALL,
+        &rcvOff,
+        sizeof(rcvOff),
+        nullptr,
+        0,
+        &bytesReturned,
+        nullptr,
+        nullptr);
 
-    logger_->Log(
-        nowTimestamp() +
-        " ERROR: DHCP/BOOTP capture is unavailable: "
-        "program was built without HAVE_PCAP");
-
-#endif
+    closesocket(sock);
 }
+
