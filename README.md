@@ -1,5 +1,7 @@
 # dhcplog — simple DHCP/BOOTP logger
 
+![dhcplog Screenshot](scr1.png)
+
 ## Overview
 
 dhcplog is a small Windows C++ application that can capture and log DHCP/BOOTP messages from a network interface. The repository also includes a helper script `send_dhcp.py` to send test DHCP packets using Scapy.
