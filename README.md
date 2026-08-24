@@ -14,22 +14,22 @@ dhcplog is a small Windows C++ application that can capture and log DHCP/BOOTP m
 
 ## Requirements
 
-* Windows 10/11
+* Windows 10/11, x64
 * Microsoft Visual Studio (MSVC) to build the project
-* Npcap for live packet capture (install with "WinPcap API-compatible mode")
+* Npcap runtime driver installed with "WinPcap API-compatible mode" — optional at runtime; the app falls back to a native Winsock raw-socket (SIO_RCVALL) capture backend if Npcap is not installed
 * Python 3 and Scapy for sending test packets (`pip install scapy`)
 
 ## Build (Visual Studio)
 
 1. Open `dhcplog.sln` in Visual Studio.
-2. To enable pcap support using Npcap:
+2. The Npcap SDK (headers + import libs) is vendored in the repository at `dhcplog/sdk` — no separate download or global install path is required to build. Project Properties (Configuration = x64) are already set to:
 
-   * Install Npcap and optionally the Npcap SDK.
-   * Project Properties → C/C++ → Preprocessor → add `HAVE_PCAP`
-   * Project Properties → C/C++ → Additional Include Directories → add Npcap `Include` directory, e.g. `C:\Program Files\Npcap\Include`
-   * Project Properties → Linker → Additional Library Directories → add `Npcap\Lib\<x86|x64>`
-   * Project Properties → Linker → Input → Additional Dependencies → add `wpcap.lib;Packet.lib;Ws2_32.lib`
-3. Build the solution (Build → Build Solution).
+   * C/C++ → Additional Include Directories → `$(SolutionDir)sdk`
+   * Linker → Additional Library Directories → `$(SolutionDir)sdk\lib`
+   * Linker → Input → Additional Dependencies → `wpcap.lib;Packet.lib;Ws2_32.lib`
+3. Build the solution for the **x64** platform (Build → Build Solution). Win32/x86 is not configured — only x64 libs are vendored in `dhcplog/sdk`.
+
+At runtime, the app checks whether the Npcap driver is installed (via the `npcap` service in the Service Control Manager). If present, it captures through Npcap; otherwise it automatically falls back to the raw-socket (SIO_RCVALL) backend. No build-time toggle is needed — both backends are always compiled in.
 
 ## Run and test
 
@@ -44,11 +44,13 @@ dhcplog is a small Windows C++ application that can capture and log DHCP/BOOTP m
      Copy the exact value from the "Interface Name" column, e.g. `Wi-Fi` or `Беспроводная сеть`.
    * Run TShark in parallel to monitor DHCP traffic:
      `tshark -i 5 -f "udp port 67 or udp port 68"`
-   * Run the example:
+   * Run the test example (v1 supports DHCP only):
      `python .\send_dhcp.py --iface "Беспроводная сеть" --count 3 --type discover --mac 44:6D:57:2E:F3:6A`
-   * BOOTP request example using version 2:
+	 `python .\send_dhcp.py --iface "Ethernet" --count 3 --type discover --mac 44:6D:57:2E:F3:6A`
+   * BOOTP request example using version 2 (support both DHCP or BOOTP request type):
      `python .\send_dhcp.v2.py --iface "Беспроводная сеть" --count 3 --type bootp --mac 44:6D:57:2E:F3:6A`
-
+	 `python .\send_dhcp.v2.py --iface "Ethernet" --count 3 --type discover --mac 44:6D:57:2E:F3:6A`
+	 
 ## Security and permissions
 
 * Sending DHCP packets on a network can affect local DHCP servers. Use this only on test or isolated networks.
@@ -56,7 +58,9 @@ dhcplog is a small Windows C++ application that can capture and log DHCP/BOOTP m
 
 ## Troubleshooting
 
-* If the application does not log packets, check whether the project was built with `HAVE_PCAP` (if you expect to use pcap) or whether `SIO_RCVALL` is permitted on your Windows version.
+* The application log states which capture backend is active on startup: `Npcap detected, using pcap backend` or `Npcap not installed, using raw-socket (WinAPI) backend`.
+* If Npcap is detected but `pcap_open_live failed` appears in the log, the app automatically falls back to the raw-socket backend (`falling back to raw-socket backend`) — capture continues, but check the Npcap installation (WinPcap API-compatible mode) and the reported error text if pcap capture specifically is required.
+* If the application does not log packets on either backend, confirm it is running as Administrator — both `SIO_RCVALL` and Npcap capture require elevated privileges.
 * If `send_dhcp.py` does not send packets, ensure Npcap is installed and the terminal is running as Administrator.
 
 ## Contact

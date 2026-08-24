@@ -218,7 +218,9 @@ static bool StartCapture(HWND hWnd)
         std::make_unique<DhcpSniffer>(
             hWnd,
             g_logger.get(),
-            adapter->ipv4);
+            adapter->ipv4,
+            "\\Device\\NPF_" +
+            std::string(adapter->adapterName.begin(), adapter->adapterName.end()));
 
     g_sniffer->Start();
 
@@ -359,8 +361,8 @@ BOOL InitInstance(
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             0,
-            900,
-            650,
+            1120,
+            750,
             nullptr,
             nullptr,
             hInstance,

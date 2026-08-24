@@ -2,6 +2,7 @@
 
 #include <string>
 #include <Windows.h>
+#include <pcap.h>
 #include <thread>
 #include <atomic>
 #include "logger.h"
@@ -11,7 +12,8 @@ public:
     DhcpSniffer(
         HWND mainWnd,
         LogManager* logger,
-        const std::string& interfaceName);
+        const std::string& interfaceName,
+        const std::string& npcapDevice);
 
     ~DhcpSniffer();
 
@@ -21,10 +23,14 @@ public:
 
 private:
     void run();
+    void runRawSocket();
+    bool runNpcap();
 
     HWND mainWnd_;
     LogManager* logger_;
     std::string interfaceName_;
+    std::string npcapDevice_;
     std::thread thread_;
     std::atomic<bool> running_;
+    pcap_t* pcap_ = nullptr;
 };

@@ -11,6 +11,8 @@
 #include <algorithm>
 
 #pragma comment(lib, "Ws2_32.lib")
+#pragma comment(lib, "wpcap.lib")
+#pragma comment(lib, "Packet.lib")
 
 static std::string nowTimestamp()
 {
@@ -138,13 +140,16 @@ static void AppendHexDumpLine(
 DhcpSniffer::DhcpSniffer(
     HWND mainWnd,
     LogManager* logger,
-    const std::string& interfaceName)
+    const std::string& interfaceName,
+    const std::string& npcapDevice)
     : mainWnd_(mainWnd),
     logger_(logger),
     interfaceName_(interfaceName),
+    npcapDevice_(npcapDevice),
     running_(false)
 {
 }
+
 
 DhcpSniffer::~DhcpSniffer()
 {
@@ -172,7 +177,7 @@ void DhcpSniffer::Stop()
 // interfaceName_ holds the dotted IPv4 address of the selected
 // adapter (see NetworkAdapter::ipv4 in dhcplog.cpp) -- raw sockets
 // bind to an IP, not to a device name.
-void DhcpSniffer::run()
+void DhcpSniffer::runRawSocket()
 {
     SOCKET sock = socket(AF_INET, SOCK_RAW, IPPROTO_IP);
 
@@ -392,3 +397,183 @@ void DhcpSniffer::run()
 
     closesocket(sock);
 }
+
+static bool IsNpcapInstalled()
+{
+    SC_HANDLE scm = OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!scm)
+        return false;
+
+    SC_HANDLE svc = OpenService(scm, L"npcap", SERVICE_QUERY_STATUS);
+    bool installed = (svc != nullptr);
+
+    if (svc) CloseServiceHandle(svc);
+    CloseServiceHandle(scm);
+
+    return installed;
+}
+
+bool DhcpSniffer::runNpcap()
+{
+    char errbuf[PCAP_ERRBUF_SIZE]{};
+
+    pcap_ = pcap_open_live(
+        npcapDevice_.c_str(),
+        65536,
+        1,
+        500,
+        errbuf);
+
+    if (!pcap_) {
+        logger_->Log(
+            nowTimestamp() +
+            " ERROR: pcap_open_live failed: " +
+            errbuf);
+        return false;
+    }
+
+    bpf_program filter{};
+
+    if (pcap_compile(pcap_, &filter, "udp and (port 67 or port 68)", 1, PCAP_NETMASK_UNKNOWN) == 0) {
+        pcap_setfilter(pcap_, &filter);
+        pcap_freecode(&filter);
+    }
+
+    int linkType = pcap_datalink(pcap_);
+    int l2HeaderLen = (linkType == DLT_EN10MB) ? 14 : 0;
+
+    logger_->Log(
+        nowTimestamp() +
+        " INFO: npcap capture started on " +
+        interfaceName_);
+
+    while (running_) {
+
+        pcap_pkthdr* hdr = nullptr;
+        const unsigned char* frame = nullptr;
+
+        int rc = pcap_next_ex(pcap_, &hdr, &frame);
+
+        if (rc == 0)
+            continue;
+
+        if (rc < 0) {
+            logger_->Log(
+                nowTimestamp() +
+                " ERROR: pcap_next_ex failed: " +
+                pcap_geterr(pcap_));
+            break;
+        }
+
+        if (static_cast<int>(hdr->caplen) <= l2HeaderLen)
+            continue;
+
+        const unsigned char* ip = frame + l2HeaderLen;
+        int received = static_cast<int>(hdr->caplen) - l2HeaderLen;
+
+        if (received >= 20) {
+            int ipHeaderLen = (ip[0] & 0x0F) * 4;
+
+            if (ipHeaderLen >= 20 &&
+                received >= ipHeaderLen + 8 &&
+                ip[9] == IPPROTO_UDP) {
+
+                const unsigned char* udp = ip + ipHeaderLen;
+
+                uint16_t srcPort =
+                    static_cast<uint16_t>((udp[0] << 8) | udp[1]);
+
+                uint16_t dstPort =
+                    static_cast<uint16_t>((udp[2] << 8) | udp[3]);
+
+                if ((srcPort == 67 || srcPort == 68) &&
+                    (dstPort == 67 || dstPort == 68)) {
+
+                    logger_->Log(
+                        nowTimestamp() +
+                        " RAW_DHCP_BOOTP_RECV len=" +
+                        std::to_string(received));
+                }
+            }
+        }
+
+        if (received < 20)
+            continue;
+
+        int ipHeaderLen = (ip[0] & 0x0F) * 4;
+
+        if (ip[9] != IPPROTO_UDP)
+            continue;
+
+        if (received < ipHeaderLen + 8)
+            continue;
+
+        const unsigned char* udp = ip + ipHeaderLen;
+
+        uint16_t srcPort = (udp[0] << 8) | udp[1];
+        uint16_t dstPort = (udp[2] << 8) | udp[3];
+
+        if (srcPort != 67 && srcPort != 68 &&
+            dstPort != 67 && dstPort != 68)
+            continue;
+
+        uint32_t srcIpRaw;
+        uint32_t dstIpRaw;
+
+        memcpy(&srcIpRaw, ip + 12, 4);
+        memcpy(&dstIpRaw, ip + 16, 4);
+
+        const unsigned char* payload = udp + 8;
+        int payloadLen = received - ipHeaderLen - 8;
+
+        std::ostringstream entry;
+
+        entry << nowTimestamp()
+            << " CAPTURE len=" << received
+            << " SRC=" << ipToString(srcIpRaw) << ":" << srcPort
+            << " DST=" << ipToString(dstIpRaw) << ":" << dstPort
+            << " TYPE=" << DhcpMessageType(payload, payloadLen);
+
+        int toDump = (std::min)(128, payloadLen);
+
+        for (int offset = 0; offset < toDump; offset += kHexBytesPerLine) {
+
+            int lineLen = (std::min)(kHexBytesPerLine, toDump - offset);
+
+            entry << "\r\n";
+
+            AppendHexDumpLine(entry, payload + offset, lineLen);
+        }
+
+        logger_->Log(entry.str());
+    }
+
+    pcap_close(pcap_);
+    pcap_ = nullptr;
+    return true;
+}
+
+void DhcpSniffer::run()
+{
+    if (IsNpcapInstalled()) {
+
+        logger_->Log(
+            nowTimestamp() +
+            " INFO: Npcap detected, using pcap backend");
+
+        if (runNpcap())
+            return;
+
+        logger_->Log(
+            nowTimestamp() +
+            " WARNING: pcap backend failed, falling back to raw-socket backend");
+    }
+    else {
+        logger_->Log(
+            nowTimestamp() +
+            " INFO: Npcap not installed, using raw-socket (WinAPI) backend");
+    }
+
+    runRawSocket();
+}
+
