@@ -67,6 +67,10 @@ At runtime, the app checks whether the Npcap driver is installed (via the `npcap
 * If the application does not log packets on either backend, confirm it is running as Administrator — both `SIO_RCVALL` and Npcap capture require elevated privileges.
 * If `send_dhcp.py` does not send packets, ensure Npcap is installed and the terminal is running as Administrator.
 
-## Contact
+## Contact & Support
 
-This is a local project in your repository. For further changes or issues, open issues in your remote repository.
+If you encounter a bug, have questions, or want to propose a feature, feel free to open an [Issue](../../issues).
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
