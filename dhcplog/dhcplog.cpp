@@ -5,6 +5,10 @@
 #include "dhcplog.h"
 
 #include <thread>
+#include <chrono>
+#include <ctime>
+#include <sstream>
+#include <iomanip>
 #include <memory>
 #include <string>
 #include <vector>
@@ -19,6 +23,20 @@
 
 #include "logger.h"
 #include "sniffer.h"
+
+static std::string nowTimestamp()
+{
+    using namespace std::chrono;
+
+    auto t = system_clock::to_time_t(system_clock::now());
+
+    std::tm tm;
+    localtime_s(&tm, &t);
+
+    std::ostringstream ss;
+    ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return ss.str();
+}
 
 #define MAX_LOADSTRING 100
 
@@ -67,7 +85,6 @@ INT_PTR CALLBACK About(
 static std::vector<NetworkAdapter> GetNetworkAdapters();
 
 static bool StartCapture(HWND hWnd);
-
 
 // ------------------------------------------------------------
 // Get Windows network adapters.
@@ -228,7 +245,8 @@ static bool StartCapture(HWND hWnd)
     g_captureStarted = true;
 
     g_logger->Log(
-        "INFO: capture started");
+        nowTimestamp() +
+        " INFO: capture started");
 
     return true;
 }
@@ -568,7 +586,7 @@ LRESULT CALLBACK WndProc(
 
                     if (g_logger)
                         g_logger->Log(
-                            "INFO: capture stopped");
+                            nowTimestamp() +" INFO: capture stopped");
                 }
 
                 g_sniffer.reset();
@@ -595,9 +613,9 @@ LRESULT CALLBACK WndProc(
 
                     g_captureStarted = false;
 
-                    if (g_logger)
-                        g_logger->Log(
-                            "INFO: Capture stopped by user");
+                    g_logger->Log(
+                        nowTimestamp() +
+                        " INFO: Capture started by user");
                 }
                 else {
 
