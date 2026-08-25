@@ -7,17 +7,14 @@ Usage examples:
   DHCPDISCOVER:
     python send_dhcp.py --iface "Беспроводная сеть" --count 3 --type discover
 
-  DHCPREQUEST:
-    python send_dhcp.py --iface "Беспроводная сеть" --count 1 --type request --requested-ip 192.168.77.18
+  DHCPREQUEST без Option 81:
+    python send_dhcp.py --iface "Ethernet" --count 1 --type request --mac 9C:6B:00:57:10:A1 --requested-ip 10.91.0.191
+
+  DHCPREQUEST з Option 81 (Client FQDN):
+    python send_dhcp.py --iface "Ethernet" --count 1 --type request --mac 9C:6B:00:57:10:A1 --requested-ip 10.91.0.191 --fqdn C50-100-6165.fbp.bank.gov.ua
 
   BOOTP REQUEST:
     python send_dhcp.py --iface "Беспроводная сеть" --count 3 --type bootp --mac 44:6D:57:2E:F3:6A
-
-Requires:
-  Python 3
-  Scapy
-  Npcap (Windows)
-  Administrator rights
 """
 
 import argparse
@@ -79,7 +76,7 @@ def build_chaddr(mac_str):
     return b + b"\x00" * 10
 
 
-def send_dhcp(iface, count, msg_type, client_mac=None, requested_ip=None):
+def send_dhcp(iface, count, msg_type, client_mac=None, requested_ip=None, fqdn=None):
 
     conf.iface = iface
 
@@ -118,18 +115,6 @@ def send_dhcp(iface, count, msg_type, client_mac=None, requested_ip=None):
     # ---------------------------------------------------------
     # BOOTP REQUEST
     # ---------------------------------------------------------
-    #
-    # IMPORTANT:
-    #
-    # This branch intentionally does NOT add DHCP().
-    #
-    # Therefore the resulting packet is:
-    #
-    # Ethernet / IP / UDP / BOOTP
-    #
-    # and not:
-    #
-    # Ethernet / IP / UDP / BOOTP / DHCP
     #
     if msg_type == "bootp":
 
@@ -205,6 +190,11 @@ def send_dhcp(iface, count, msg_type, client_mac=None, requested_ip=None):
         print("Unknown msg_type:", msg_type)
         return
 
+    if fqdn:
+        # Option 81 (Client FQDN): Flags=0x01 (S-bit=1), RCODE1=0, RCODE2=0
+        opt81_bytes = b"\x01\x00\x00" + fqdn.encode("ascii")
+        options.append((81, opt81_bytes))
+
     options.append(
         ("end", b"")
     )
@@ -270,6 +260,11 @@ def main():
         help="Requested IP address for DHCPREQUEST"
     )
 
+    parser.add_argument(
+        "--fqdn",
+        help="Client FQDN for Option 81, e.g. C50-100-6165.fbp.bank.gov.ua"
+    )
+
     args = parser.parse_args()
 
     if IS_WINDOWS and not is_admin():
@@ -284,9 +279,11 @@ def main():
         args.count,
         args.type,
         client_mac=args.mac,
-        requested_ip=args.requested_ip
+        requested_ip=args.requested_ip,
+        fqdn=args.fqdn
     )
 
 
 if __name__ == "__main__":
     main()
+    

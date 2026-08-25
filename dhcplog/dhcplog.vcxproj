@@ -163,8 +163,13 @@
     <ResourceCompile Include="dhcplog.rc" />
   </ItemGroup>
   <ItemGroup>
+    <Image Include="..\scr1.png" />
     <Image Include="dhcplog.ico" />
     <Image Include="small.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\LICENSE" />
+    <None Include="..\README.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -30,6 +30,7 @@ WCHAR szWindowClass[MAX_LOADSTRING];
 HWND g_hEdit = nullptr;
 HFONT g_hLogFont = nullptr;
 HWND g_hInterfaceCombo = nullptr;
+HWND g_hStartButton = nullptr;
 
 std::unique_ptr<LogManager> g_logger;
 std::unique_ptr<DhcpSniffer> g_sniffer;
@@ -411,19 +412,20 @@ BOOL InitInstance(
 
     // Start button
 
-    CreateWindowW(
-        L"BUTTON",
-        L"Start capture",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        610,
-        7,
-        120,
-        28,
-        hWnd,
-        reinterpret_cast<HMENU>(
-            ID_START_CAPTURE),
-        hInstance,
-        nullptr);
+    g_hStartButton =
+        CreateWindowW(
+            L"BUTTON",
+            L"Start capture",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            610,
+            7,
+            120,
+            28,
+            hWnd,
+            reinterpret_cast<HMENU>(
+                ID_START_CAPTURE),
+            hInstance,
+            nullptr);
 
 
     // Log window
@@ -551,11 +553,38 @@ LRESULT CALLBACK WndProc(
                         L"DHCP Logger",
                         MB_ICONERROR);
                 }
+                else if (g_hStartButton) {
+
+                    SetWindowTextW(
+                        g_hStartButton,
+                        L"Stop capture");
+                }
+            }
+            else {
+
+                if (g_sniffer) {
+
+                    g_sniffer->Stop();
+
+                    if (g_logger)
+                        g_logger->Log(
+                            "INFO: capture stopped");
+                }
+
+                g_sniffer.reset();
+                g_logger.reset();
+
+                g_captureStarted = false;
+
+                if (g_hStartButton) {
+
+                    SetWindowTextW(
+                        g_hStartButton,
+                        L"Start capture");
+                }
             }
 
             break;
-
-
         case IDM_TOGGLE_CAPTURE:
 
             if (g_sniffer) {
