@@ -11,8 +11,13 @@
 #include <algorithm>
 
 #pragma comment(lib, "Ws2_32.lib")
-#pragma comment(lib, "wpcap.lib")
-#pragma comment(lib, "Packet.lib")
+
+// Dynamically load wpcap.dll at runtime so the application can run
+// on systems without Npcap/WinPcap installed and fall back to the
+// raw-socket WinAPI backend. Avoid linking against wpcap.lib/Packet.lib
+// which causes a hard dependency on wpcap.dll at process start.
+
+#include <memory>
 
 static std::string nowTimestamp()
 {
@@ -26,6 +31,65 @@ static std::string nowTimestamp()
     std::ostringstream ss;
     ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return ss.str();
+}
+
+// Function pointers for the subset of libpcap API used by this program.
+// We load them from wpcap.dll at runtime when needed.
+namespace pcap_dyn {
+    static HMODULE dll = nullptr;
+
+    using pcap_open_live_t = pcap_t*(__cdecl*)(const char*, int, int, int, char*);
+    using pcap_compile_t = int(__cdecl*)(pcap_t*, bpf_program*, const char*, int, bpf_u_int32);
+    using pcap_setfilter_t = int(__cdecl*)(pcap_t*, bpf_program*);
+    using pcap_freecode_t = void(__cdecl*)(bpf_program*);
+    using pcap_datalink_t = int(__cdecl*)(pcap_t*);
+    using pcap_next_ex_t = int(__cdecl*)(pcap_t*, pcap_pkthdr**, const unsigned char**);
+    using pcap_geterr_t = char*(__cdecl*)(pcap_t*);
+    using pcap_close_t = void(__cdecl*)(pcap_t*);
+
+    static pcap_open_live_t pcap_open_live = nullptr;
+    static pcap_compile_t pcap_compile = nullptr;
+    static pcap_setfilter_t pcap_setfilter = nullptr;
+    static pcap_freecode_t pcap_freecode = nullptr;
+    static pcap_datalink_t pcap_datalink = nullptr;
+    static pcap_next_ex_t pcap_next_ex = nullptr;
+    static pcap_geterr_t pcap_geterr = nullptr;
+    static pcap_close_t pcap_close = nullptr;
+
+    static bool Load()
+    {
+        if (dll) return true;
+
+        dll = LoadLibraryW(L"wpcap.dll");
+        if (!dll) return false;
+
+        pcap_open_live = reinterpret_cast<pcap_open_live_t>(GetProcAddress(dll, "pcap_open_live"));
+        pcap_compile = reinterpret_cast<pcap_compile_t>(GetProcAddress(dll, "pcap_compile"));
+        pcap_setfilter = reinterpret_cast<pcap_setfilter_t>(GetProcAddress(dll, "pcap_setfilter"));
+        pcap_freecode = reinterpret_cast<pcap_freecode_t>(GetProcAddress(dll, "pcap_freecode"));
+        pcap_datalink = reinterpret_cast<pcap_datalink_t>(GetProcAddress(dll, "pcap_datalink"));
+        pcap_next_ex = reinterpret_cast<pcap_next_ex_t>(GetProcAddress(dll, "pcap_next_ex"));
+        pcap_geterr = reinterpret_cast<pcap_geterr_t>(GetProcAddress(dll, "pcap_geterr"));
+        pcap_close = reinterpret_cast<pcap_close_t>(GetProcAddress(dll, "pcap_close"));
+
+        if (!pcap_open_live || !pcap_compile || !pcap_setfilter || !pcap_freecode ||
+            !pcap_datalink || !pcap_next_ex || !pcap_geterr || !pcap_close) {
+            // Missing symbol(s) - unload and fail.
+            FreeLibrary(dll);
+            dll = nullptr;
+            pcap_open_live = nullptr;
+            pcap_compile = nullptr;
+            pcap_setfilter = nullptr;
+            pcap_freecode = nullptr;
+            pcap_datalink = nullptr;
+            pcap_next_ex = nullptr;
+            pcap_geterr = nullptr;
+            pcap_close = nullptr;
+            return false;
+        }
+
+        return true;
+    }
 }
 
 static std::string ipToString(uint32_t netOrderIp)
@@ -416,8 +480,12 @@ static bool IsNpcapInstalled()
 bool DhcpSniffer::runNpcap()
 {
     char errbuf[PCAP_ERRBUF_SIZE]{};
+    if (!pcap_dyn::Load()) {
+        logger_->Log(nowTimestamp() + " ERROR: failed to load wpcap.dll");
+        return false;
+    }
 
-    pcap_ = pcap_open_live(
+    pcap_ = pcap_dyn::pcap_open_live(
         npcapDevice_.c_str(),
         65536,
         1,
@@ -434,12 +502,12 @@ bool DhcpSniffer::runNpcap()
 
     bpf_program filter{};
 
-    if (pcap_compile(pcap_, &filter, "udp and (port 67 or port 68)", 1, PCAP_NETMASK_UNKNOWN) == 0) {
-        pcap_setfilter(pcap_, &filter);
-        pcap_freecode(&filter);
+    if (pcap_dyn::pcap_compile(pcap_, &filter, "udp and (port 67 or port 68)", 1, PCAP_NETMASK_UNKNOWN) == 0) {
+        pcap_dyn::pcap_setfilter(pcap_, &filter);
+        pcap_dyn::pcap_freecode(&filter);
     }
 
-    int linkType = pcap_datalink(pcap_);
+    int linkType = pcap_dyn::pcap_datalink(pcap_);
     int l2HeaderLen = (linkType == DLT_EN10MB) ? 14 : 0;
 
     logger_->Log(
@@ -452,7 +520,7 @@ bool DhcpSniffer::runNpcap()
         pcap_pkthdr* hdr = nullptr;
         const unsigned char* frame = nullptr;
 
-        int rc = pcap_next_ex(pcap_, &hdr, &frame);
+        int rc = pcap_dyn::pcap_next_ex(pcap_, &hdr, &frame);
 
         if (rc == 0)
             continue;
@@ -461,7 +529,7 @@ bool DhcpSniffer::runNpcap()
             logger_->Log(
                 nowTimestamp() +
                 " ERROR: pcap_next_ex failed: " +
-                pcap_geterr(pcap_));
+                pcap_dyn::pcap_geterr(pcap_));
             break;
         }
 
@@ -548,7 +616,7 @@ bool DhcpSniffer::runNpcap()
         logger_->Log(entry.str());
     }
 
-    pcap_close(pcap_);
+    if (pcap_) pcap_dyn::pcap_close(pcap_);
     pcap_ = nullptr;
     return true;
 }
