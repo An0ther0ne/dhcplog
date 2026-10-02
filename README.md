@@ -47,16 +47,20 @@ At runtime, the app checks whether the Npcap driver is installed (via the `npcap
    * Run TShark in parallel to monitor DHCP traffic:
      `tshark -i 5 -f "udp port 67 or udp port 68"`
    * Run the test example (v1 supports DHCP only):
-   ```cmd
-     `python send_dhcp.py --iface "Беспроводная сеть" --count 3 --type discover --mac 44:6D:57:2E:F3:6A`
-     `python send_dhcp.py --iface "Ethernet" --count 3 --type discover --mac 44:6D:57:2E:F3:6A`
-	```
+     ```cmd
+     python send_dhcp.py --iface "Беспроводная сеть" --count 3 --type discover --mac 44:6D:57:2E:F3:6A
+     python send_dhcp.py --iface "Ethernet" --count 3 --type discover --mac 44:6D:57:2E:F3:6A
+     ```
    * BOOTP request example using version 2 (support both DHCP or BOOTP request type):
-   ```cmd
-     `python send_dhcp.v2.py --iface "Беспроводная сеть" --count 3 --type bootp --mac 44:6D:57:2E:F3:6A`
-	 `python send_dhcp.v2.py --iface "Ethernet" --count 3 --type discover --mac 44:6D:57:2E:F3:6A`
-	```
-	 
+     ```cmd
+     python send_dhcp.v2.py --iface "Беспроводная сеть" --count 3 --type bootp --mac 44:6D:57:2E:F3:6A
+     python send_dhcp.v2.py --iface "Ethernet" --count 3 --type discover --mac 44:6D:57:2E:F3:6A
+     ```
+   * PXE request test example using `pxetst.py`:
+     ```cmd
+     python pxetst.py --iface "Беспроводная сеть"
+     python pxetst.py --iface "Ethernet"
+     ```
 ## Security and permissions
 
 * Sending DHCP packets on a network can affect local DHCP servers. Use this only on test or isolated networks.
