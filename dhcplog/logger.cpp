@@ -99,6 +99,66 @@ void LogManager::openNewFile()
 	out_.open(name, std::ios::out | std::ios::app);
 }
 
+void LogManager::ForceRotate()
+{
+	try {
+		std::function<void()> cb;
+
+		{
+			std::lock_guard<std::mutex> lk(mutex_);
+
+			// If no file open, just open new file
+			if (!out_.is_open()) {
+				openNewFile();
+				cb = rotationCallback_;
+				// call callback outside lock
+			}
+			else {
+				// Close current file and attempt to rename it with a timestamp
+				out_.close();
+
+				// currentSuffix_ holds the logical suffix used for filenames
+				std::wstring wold = directory_ + L"/dhcp_log_" + std::wstring(currentSuffix_.begin(), currentSuffix_.end()) + L".log";
+				std::ostringstream ts;
+				auto t = system_clock::to_time_t(system_clock::now());
+				std::tm tm;
+#ifdef _WIN32
+				localtime_s(&tm, &t);
+#else
+				tm = *std::localtime(&t);
+#endif
+				ts << std::put_time(&tm, "%Y%m%d_%H%M%S");
+
+				std::wstring wnew = wold + L"." + std::wstring(ts.str().begin(), ts.str().end());
+
+				try {
+					std::filesystem::rename(wold, wnew);
+				}
+				catch (...) {
+					// ignore rename errors; file may be locked. Proceed to open new file anyway.
+				}
+
+				// open a fresh file (will recreate base filename)
+				openNewFile();
+				cb = rotationCallback_;
+			}
+		}
+
+		if (cb) {
+			try { cb(); } catch (...) { /* swallow callback exceptions */ }
+		}
+	}
+	catch (const std::exception& ex) {
+		// Ensure no exception escapes; write to debug output instead of calling Log()
+		std::string msg = "LogManager::ForceRotate exception: ";
+		msg += ex.what();
+		OutputDebugStringA(msg.c_str());
+	}
+	catch (...) {
+		OutputDebugStringA("LogManager::ForceRotate unknown exception\n");
+	}
+}
+
 void LogManager::SetRotationCallback(std::function<void()> cb)
 {
 	std::lock_guard<std::mutex> lk(mutex_);

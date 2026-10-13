@@ -16,6 +16,7 @@ public:
 	void Stop();
 	void Log(const std::string& line);
 	void SetRotation(Rotation r);
+	void ForceRotate();
 	void SetRotationCallback(std::function<void()> cb);
 private:
 	bool rotateIfNeeded();

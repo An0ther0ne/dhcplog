@@ -242,8 +242,11 @@ static bool StartCapture(HWND hWnd)
 
     // Ensure log rotation triggers a socket restart so rotation and
     // capture socket lifecycle are synchronized.
-    g_logger->SetRotationCallback([sn = g_sniffer.get()]() {
-        if (sn) sn->RequestSocketRestart();
+    // Use the global g_sniffer pointer inside the callback so that the
+    // callback remains valid even if the sniffer is stopped and
+    // recreated later. Avoid capturing a raw pointer that can dangle.
+    g_logger->SetRotationCallback([]() {
+        if (g_sniffer) g_sniffer->RequestSocketRestart();
     });
 
     g_sniffer->Start();
@@ -645,6 +648,7 @@ LRESULT CALLBACK WndProc(
                 g_logger->SetRotation(
                     LogManager::Rotation::Daily);
 
+                g_logger->ForceRotate();
                 g_logger->Log(
                     "INFO: Rotation set to daily");
             }
@@ -659,6 +663,7 @@ LRESULT CALLBACK WndProc(
                 g_logger->SetRotation(
                     LogManager::Rotation::Weekly);
 
+                g_logger->ForceRotate();
                 g_logger->Log(
                     "INFO: Rotation set to weekly");
             }
