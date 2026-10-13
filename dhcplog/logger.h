@@ -5,6 +5,7 @@
 #include <mutex>
 #include <fstream>
 #include <atomic>
+#include <functional>
 
 class LogManager {
 public:
@@ -15,8 +16,9 @@ public:
 	void Stop();
 	void Log(const std::string& line);
 	void SetRotation(Rotation r);
+	void SetRotationCallback(std::function<void()> cb);
 private:
-	void rotateIfNeeded();
+	bool rotateIfNeeded();
 	void openNewFile();
 
 	std::wstring directory_;
@@ -26,4 +28,5 @@ private:
 	std::string currentSuffix_;
 	std::atomic<bool> running_;
 	HWND mainWnd_ = nullptr;
+	std::function<void()> rotationCallback_;
 };

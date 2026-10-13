@@ -73,7 +73,7 @@ void LogManager::SetRotation(Rotation r)
 	currentSuffix_.clear();
 }
 
-void LogManager::rotateIfNeeded()
+bool LogManager::rotateIfNeeded()
 {
 	std::string suffix = (rotation_ == Rotation::Daily) ? timeSuffixDaily() : timeSuffixWeekly();
 	if (suffix != currentSuffix_)
@@ -81,7 +81,10 @@ void LogManager::rotateIfNeeded()
 		if (out_.is_open()) out_.close();
 		currentSuffix_ = suffix;
 		openNewFile();
+		return true;
 	}
+
+	return false;
 }
 
 void LogManager::openNewFile()
@@ -96,20 +99,38 @@ void LogManager::openNewFile()
 	out_.open(name, std::ios::out | std::ios::app);
 }
 
-void LogManager::Log(const std::string& line)
+void LogManager::SetRotationCallback(std::function<void()> cb)
 {
 	std::lock_guard<std::mutex> lk(mutex_);
+	rotationCallback_ = std::move(cb);
+}
+
+void LogManager::Log(const std::string& line)
+{
+	// Ensure logger is started outside the mutex to avoid deadlock with Start()
 	if (!running_) Start();
-	rotateIfNeeded();
-	if (out_.is_open())
+
+	std::function<void()> cb;
+	bool rotated = false;
+
 	{
-		out_ << line << "\n";
-		out_.flush();
+		std::lock_guard<std::mutex> lk(mutex_);
+		rotated = rotateIfNeeded();
+		if (out_.is_open())
+		{
+			out_ << line << "\n";
+			out_.flush();
+		}
+		// post to UI if available
+		if (mainWnd_) {
+			// allocate a copy for the UI thread
+			std::string* p = new std::string(line);
+			PostMessageA(mainWnd_, WM_APP+1, 0, (LPARAM)p);
+		}
+		cb = rotationCallback_;
 	}
-	// post to UI if available
-	if (mainWnd_) {
-		// allocate a copy for the UI thread
-		std::string* p = new std::string(line);
-		PostMessageA(mainWnd_, WM_APP+1, 0, (LPARAM)p);
+
+	if (rotated && cb) {
+		try { cb(); } catch (...) { /* swallow to avoid throwing from logger */ }
 	}
 }

@@ -6,6 +6,7 @@
 #include <sstream>
 #include <iomanip>
 #include <vector>
+#include <thread>
 #include <chrono>
 #include <cstring>
 #include <algorithm>
@@ -243,223 +244,191 @@ void DhcpSniffer::Stop()
 // bind to an IP, not to a device name.
 void DhcpSniffer::runRawSocket()
 {
-    SOCKET sock = socket(AF_INET, SOCK_RAW, IPPROTO_IP);
+    // The raw-socket capture run loop includes automatic restart and
+    // aggressive protective measures so capture continues in the face
+    // of transient driver/stack failures or oversized datagrams.
 
-    if (sock == INVALID_SOCKET) {
-        logger_->Log(
-            nowTimestamp() +
-            " ERROR: socket() failed: " +
-            std::to_string(WSAGetLastError()));
-
-        return;
-    }
-
-    sockaddr_in bindAddr{};
-    bindAddr.sin_family = AF_INET;
-
-    if (inet_pton(AF_INET, interfaceName_.c_str(), &bindAddr.sin_addr) != 1) {
-
-        logger_->Log(
-            nowTimestamp() +
-            " ERROR: invalid interface IPv4 address: " +
-            interfaceName_);
-
-        closesocket(sock);
-        return;
-    }
-
-    if (bind(
-        sock,
-        reinterpret_cast<sockaddr*>(&bindAddr),
-        sizeof(bindAddr)) == SOCKET_ERROR) {
-
-        logger_->Log(
-            nowTimestamp() +
-            " ERROR: bind() failed: " +
-            std::to_string(WSAGetLastError()));
-
-        closesocket(sock);
-        return;
-    }
-
-    DWORD hdrIncl = TRUE;
-
-    setsockopt(
-        sock,
-        IPPROTO_IP,
-        IP_HDRINCL,
-        reinterpret_cast<char*>(&hdrIncl),
-        sizeof(hdrIncl));
-
-    // RCVALL_IPLEVEL: deliver every IP packet the NIC already
-    // receives (unicast to us, broadcast, multicast) without
-    // switching the adapter into true NIC promiscuous mode.
-    // DHCP/BOOTP traffic is broadcast or addressed to us, so this
-    // is sufficient and works on adapters (Wi-Fi, virtual) that
-    // don't support real promiscuous mode. If it doesn't capture
-    // anything on a given adapter, switch this to RCVALL_ON.
-    // DWORD rcvAll = RCVALL_IPLEVEL;
-    DWORD rcvAll = RCVALL_ON;
-    DWORD bytesReturned = 0;
-
-    if (WSAIoctl(
-        sock,
-        SIO_RCVALL,
-        &rcvAll,
-        sizeof(rcvAll),
-        nullptr,
-        0,
-        &bytesReturned,
-        nullptr,
-        nullptr) == SOCKET_ERROR) {
-
-        logger_->Log(
-            nowTimestamp() +
-            " ERROR: SIO_RCVALL failed (потрібні права адміністратора): " +
-            std::to_string(WSAGetLastError()));
-
-        closesocket(sock);
-        return;
-    }
-
-    logger_->Log(
-        nowTimestamp() +
-        " INFO: raw capture started on " +
-        interfaceName_);
-
-    // Recv timeout so the loop notices Stop() promptly instead of
-    // blocking indefinitely on recv().
-    DWORD timeout = 500;
-
-    setsockopt(
-        sock,
-        SOL_SOCKET,
-        SO_RCVTIMEO,
-        reinterpret_cast<char*>(&timeout),
-        sizeof(timeout));
-
-    std::vector<unsigned char> buffer(65536);
+    const size_t kUserBufInitial = 64 * 1024;    // 64 KiB
+    const size_t kUserBufMax = 16 * 1024 * 1024; // 16 MiB
+    const int kRestartErrorThreshold = 5;        // consecutive errors -> restart socket
 
     while (running_) {
 
-        int received = recv(
-            sock,
-            reinterpret_cast<char*>(buffer.data()),
-            static_cast<int>(buffer.size()),
-            0);
-//        if (buffer[9] == IPPROTO_UDP )
-//            __debugbreak();
-
-        if (received == SOCKET_ERROR) {
-
-            int err = WSAGetLastError();
-
-            if (err == WSAETIMEDOUT)
-                continue;
-
-            logger_->Log(
-                nowTimestamp() +
-                " ERROR: recv() failed: " +
-                std::to_string(err));
-
-            break;
+        SOCKET sock = socket(AF_INET, SOCK_RAW, IPPROTO_IP);
+        if (sock == INVALID_SOCKET) {
+            logger_->Log(nowTimestamp() + " ERROR: socket() failed: " + std::to_string(WSAGetLastError()));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            continue;
         }
 
-        if (received >= 20) {
-            const unsigned char* ip = buffer.data();
+        sockaddr_in bindAddr{};
+        bindAddr.sin_family = AF_INET;
 
-            int ipHeaderLen = (ip[0] & 0x0F) * 4;
+        if (inet_pton(AF_INET, interfaceName_.c_str(), &bindAddr.sin_addr) != 1) {
+            logger_->Log(nowTimestamp() + " ERROR: invalid interface IPv4 address: " + interfaceName_);
+            closesocket(sock);
+            return;
+        }
 
-            if (ipHeaderLen >= 20 &&
-                received >= ipHeaderLen + 8 &&
-                ip[9] == IPPROTO_UDP) {
+        if (bind(sock, reinterpret_cast<sockaddr*>(&bindAddr), sizeof(bindAddr)) == SOCKET_ERROR) {
+            logger_->Log(nowTimestamp() + " ERROR: bind() failed: " + std::to_string(WSAGetLastError()));
+            closesocket(sock);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            continue;
+        }
 
-                const unsigned char* udp = ip + ipHeaderLen;
+        DWORD hdrIncl = TRUE;
+        setsockopt(sock, IPPROTO_IP, IP_HDRINCL, reinterpret_cast<char*>(&hdrIncl), sizeof(hdrIncl));
 
-                uint16_t srcPort =
-                    static_cast<uint16_t>((udp[0] << 8) | udp[1]);
+        DWORD rcvAll = RCVALL_ON;
+        DWORD bytesReturned = 0;
+        if (WSAIoctl(sock, SIO_RCVALL, &rcvAll, sizeof(rcvAll), nullptr, 0, &bytesReturned, nullptr, nullptr) == SOCKET_ERROR) {
+            logger_->Log(nowTimestamp() + " ERROR: SIO_RCVALL failed (потрібні права адміністратора): " + std::to_string(WSAGetLastError()));
+            closesocket(sock);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            continue;
+        }
 
-                uint16_t dstPort =
-                    static_cast<uint16_t>((udp[2] << 8) | udp[3]);
+        // Try to increase kernel receive buffer; non-fatal if it fails.
+        int rcvBufSize = static_cast<int>(kUserBufMax);
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<char*>(&rcvBufSize), sizeof(rcvBufSize)) == SOCKET_ERROR) {
+            logger_->Log(nowTimestamp() + " WARNING: setsockopt(SO_RCVBUF) failed: " + std::to_string(WSAGetLastError()));
+        }
 
-                if ((srcPort == 67 || srcPort == 68) &&
-                    (dstPort == 67 || dstPort == 68)) {
+        logger_->Log(nowTimestamp() + " INFO: raw capture started on " + interfaceName_);
 
-                    logger_->Log(
-                        nowTimestamp() +
-                        " RAW_DHCP_BOOTP_RECV len=" +
-                        std::to_string(received));
+        DWORD timeout = 500;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char*>(&timeout), sizeof(timeout));
+
+        std::vector<unsigned char> buffer(kUserBufInitial);
+        int consecutiveErrors = 0;
+        int restartCount = 0;
+        int truncatedCount = 0;
+
+        while (running_) {
+
+            // If external component requested a restart (e.g., log rotation),
+            // break the inner loop so the socket is closed and recreated.
+            if (restartRequested_.load()) {
+                restartRequested_.store(false);
+                logger_->Log(nowTimestamp() + " INFO: socket restart requested (rotating)");
+                break; // restart socket
+            }
+            int received = recv(sock, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0);
+
+            if (received == SOCKET_ERROR) {
+                int err = WSAGetLastError();
+
+                if (err == WSAETIMEDOUT) {
+                    continue;
+                }
+
+                if (err == WSAEMSGSIZE) {
+                    // Datagram larger than user buffer: try to grow buffer up to kUserBufMax.
+                    truncatedCount++;
+                    size_t cur = buffer.size();
+                    if (cur < kUserBufMax) {
+                        size_t newSize = cur * 2;
+                        if (newSize > kUserBufMax) newSize = kUserBufMax;
+                        try {
+                            buffer.resize(newSize);
+                            logger_->Log(nowTimestamp() + " WARNING: recv() WSAEMSGSIZE - increased user buffer to " + std::to_string(newSize) + " bytes and continuing");
+                        }
+                        catch (const std::bad_alloc&) {
+                            logger_->Log(nowTimestamp() + " ERROR: cannot grow receive buffer (bad_alloc)");
+                        }
+                        continue;
+                    }
+
+                    // Already at max size - log occasionally and continue.
+                    if ((truncatedCount % 10) == 1) {
+                        logger_->Log(nowTimestamp() + " WARNING: recv() truncated message (WSAEMSGSIZE) even at max buffer size; continuing (count=" + std::to_string(truncatedCount) + ")");
+                    }
+                    consecutiveErrors = 0;
+                    continue;
+                }
+
+                consecutiveErrors++;
+                logger_->Log(nowTimestamp() + " ERROR: recv() failed: " + std::to_string(err) + " (consecutive=" + std::to_string(consecutiveErrors) + ")");
+
+                if (consecutiveErrors >= kRestartErrorThreshold) {
+                    restartCount++;
+                    logger_->Log(nowTimestamp() + " INFO: too many consecutive recv errors - restarting socket (restart#=" + std::to_string(restartCount) + ")");
+                    break; // break inner loop to restart socket
+                }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                continue;
+            }
+
+            // Successful recv
+            consecutiveErrors = 0;
+
+            if (received >= 20) {
+                const unsigned char* ip = buffer.data();
+                int ipHeaderLen = (ip[0] & 0x0F) * 4;
+
+                if (ipHeaderLen >= 20 && received >= ipHeaderLen + 8 && ip[9] == IPPROTO_UDP) {
+                    const unsigned char* udp = ip + ipHeaderLen;
+                    uint16_t srcPort = static_cast<uint16_t>((udp[0] << 8) | udp[1]);
+                    uint16_t dstPort = static_cast<uint16_t>((udp[2] << 8) | udp[3]);
+
+                    if ((srcPort == 67 || srcPort == 68) && (dstPort == 67 || dstPort == 68)) {
+                        logger_->Log(nowTimestamp() + " RAW_DHCP_BOOTP_RECV len=" + std::to_string(received));
+                    }
                 }
             }
-        }
 
-        if (received < 20)
-            continue;
+            if (received < 20)
+                continue;
 
-        const unsigned char* ip = buffer.data();
+            const unsigned char* ip = buffer.data();
+            int ipHeaderLen = (ip[0] & 0x0F) * 4;
 
-        int ipHeaderLen = (ip[0] & 0x0F) * 4;
+            if (ip[9] != IPPROTO_UDP)
+                continue;
 
-        if (ip[9] != IPPROTO_UDP)
-            continue;
+            if (received < ipHeaderLen + 8)
+                continue;
 
-        if (received < ipHeaderLen + 8)
-            continue;
+            const unsigned char* udp = ip + ipHeaderLen;
+            uint16_t srcPort = (udp[0] << 8) | udp[1];
+            uint16_t dstPort = (udp[2] << 8) | udp[3];
 
-        const unsigned char* udp = ip + ipHeaderLen;
+            if (srcPort != 67 && srcPort != 68 && dstPort != 67 && dstPort != 68)
+                continue;
 
-        uint16_t srcPort = (udp[0] << 8) | udp[1];
-        uint16_t dstPort = (udp[2] << 8) | udp[3];
+            uint32_t srcIpRaw;
+            uint32_t dstIpRaw;
 
-        if (srcPort != 67 && srcPort != 68 &&
-            dstPort != 67 && dstPort != 68)
-            continue;
+            memcpy(&srcIpRaw, ip + 12, 4);
+            memcpy(&dstIpRaw, ip + 16, 4);
 
-        uint32_t srcIpRaw;
-        uint32_t dstIpRaw;
+            const unsigned char* payload = udp + 8;
+            int payloadLen = received - ipHeaderLen - 8;
 
-        memcpy(&srcIpRaw, ip + 12, 4);
-        memcpy(&dstIpRaw, ip + 16, 4);
+            std::ostringstream entry;
+            entry << nowTimestamp()
+                << " CAPTURE len=" << received
+                << " SRC=" << ipToString(srcIpRaw) << ":" << srcPort
+                << " DST=" << ipToString(dstIpRaw) << ":" << dstPort
+                << " TYPE=" << DhcpMessageType(payload, payloadLen);
 
-        const unsigned char* payload = udp + 8;
-        int payloadLen = received - ipHeaderLen - 8;
+            int toDump = (std::min)(128, payloadLen);
+            for (int offset = 0; offset < toDump; offset += kHexBytesPerLine) {
+                int lineLen = (std::min)(kHexBytesPerLine, toDump - offset);
+                entry << "\r\n";
+                AppendHexDumpLine(entry, payload + offset, lineLen);
+            }
 
-        std::ostringstream entry;
+            logger_->Log(entry.str());
+        } // inner while
 
-        entry << nowTimestamp()
-            << " CAPTURE len=" << received
-            << " SRC=" << ipToString(srcIpRaw) << ":" << srcPort
-            << " DST=" << ipToString(dstIpRaw) << ":" << dstPort
-            << " TYPE=" << DhcpMessageType(payload, payloadLen);
-
-        int toDump = (std::min)(128, payloadLen);
-
-        for (int offset = 0; offset < toDump; offset += kHexBytesPerLine) {
-
-            int lineLen = (std::min)(kHexBytesPerLine, toDump - offset);
-
-            entry << "\r\n";
-
-            AppendHexDumpLine(entry, payload + offset, lineLen);
-        }
-
-        logger_->Log(entry.str());
-    }
-
-    DWORD rcvOff = RCVALL_OFF;
-
-    WSAIoctl(
-        sock,
-        SIO_RCVALL,
-        &rcvOff,
-        sizeof(rcvOff),
-        nullptr,
-        0,
-        &bytesReturned,
-        nullptr,
-        nullptr);
-
-    closesocket(sock);
+        // Turn off RCVALL and close socket before restarting or exiting.
+        DWORD rcvOff = RCVALL_OFF;
+        WSAIoctl(sock, SIO_RCVALL, &rcvOff, sizeof(rcvOff), nullptr, 0, &bytesReturned, nullptr, nullptr);
+        closesocket(sock);
+    } // outer while
 }
 
 static bool IsNpcapInstalled()

@@ -240,6 +240,12 @@ static bool StartCapture(HWND hWnd)
             "\\Device\\NPF_" +
             std::string(adapter->adapterName.begin(), adapter->adapterName.end()));
 
+    // Ensure log rotation triggers a socket restart so rotation and
+    // capture socket lifecycle are synchronized.
+    g_logger->SetRotationCallback([sn = g_sniffer.get()]() {
+        if (sn) sn->RequestSocketRestart();
+    });
+
     g_sniffer->Start();
 
     g_captureStarted = true;

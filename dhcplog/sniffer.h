@@ -20,6 +20,9 @@ public:
     void Start();
     void Stop();
     bool IsRunning() const { return running_; }
+    // Request that the currently open capture socket be restarted
+    // as soon as possible (used by log rotation callback).
+    void RequestSocketRestart() { restartRequested_.store(true); }
 
 private:
     void run();
@@ -33,4 +36,5 @@ private:
     std::thread thread_;
     std::atomic<bool> running_;
     pcap_t* pcap_ = nullptr;
+    std::atomic<bool> restartRequested_{false};
 };
